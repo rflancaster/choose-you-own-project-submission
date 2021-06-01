@@ -1,0 +1,186 @@
+---
+title: "RFL - Choose Your Own Project"
+author: "Richard Lancaster"
+date: "20/05/2021"
+output: pdf_document
+---
+
+Choose Your Own Project - Richard Lancaster
+
+Predicting Countries of Universities Based on Rankings Indicators
+
+In order to facilitate international collaboration between universities, it is necessary to identify suitable partners, either at the institutional or national level. To facilitate this process, this project aims to predict the country of a university, based on data in 3 indicators of a university rankings data set.
+
+Data set: Times Higher Education (THE) World University Rankings. This contains data on around 1,000 universities around the world, across a wide range of indicators, with the aim of ranking the top universities globally. Data is compiled and released annually.
+
+Indicators: For the purpose of this project, we will use 3 indicators from the data set to make the prediction.
+
+International = a measure of the internationalization at a university, based on data around collaboration.
+International students = the ratio of international to domestic students
+Income = the income of the institution
+
+Algorithm: This project will use the k nearest neighbors method to make the predictions.
+
+To start, load the necessary packages and the data set
+
+```{r}
+install.packages("caret", repos = "http://cran.us.r-project.org")
+install.packages("dplyr", repos = "http://cran.us.r-project.org")
+library(dplyr)
+library(caret)
+
+tinytex::install_tinytex()
+
+THEdata <- read.csv("./timesData.csv") 
+
+```
+
+To simplify the calculations, we will limit the data to 1 year (2016, the most recent year), and will use only data on 3 different countries. For the countries, we will select the 1 country with the most universities in the data set, from each of North America, Europe, and Asia.
+
+
+```{r}
+## order by most universities (per country) in the rankings
+THEdata <- THEdata %>% filter(year == 2016) #only using 2016 data
+top <- data.frame(table(THEdata$country)) #gives number of universities for each country
+top[order(top$Freq, decreasing = TRUE),] #puts into descending order
+```
+
+The top 3 countries are USA, UK and Japan, which are already one from each of the 3 continents I will use.
+
+Now remove all data except for that of the 3 chosen countries.
+
+```{r}
+top3 <- c("United States of America", "United Kingdom", "Japan") 
+THEdata <- THEdata %>% filter(country %in% top3)
+THEdata$country <- factor(THEdata$country) 
+```
+
+The data contains a lot of NAs, empty cells, and cells with '-'. To avoid errors related to this, all such cells will be removed.
+
+The 'total_score' column contains a lot of empty cells ('-') and is not being used anyway, so this column will be removed first.
+
+```{r}
+THEdata <- subset(THEdata, select = -total_score)
+
+## Set all empty cells and those with ‘-‘ to NA, which makes it easier to remove them
+THEdata[THEdata==""] <- NA
+THEdata[THEdata=="-"] <- NA
+
+## Remove all rows with NAs (now including empty cells and ‘-‘)
+THEdata <- na.omit(THEdata)
+```
+
+To allow for the calculations later, the relevant columns need to be changed to numeric, and some characters (%) need to be removed.
+
+```{r}
+set.seed(501) 
+
+THEdata$international_students <- as.character(THEdata$international_students)
+THEdata$international_students <- strsplit(THEdata$international_students, "%")
+THEdata$international_students <- as.numeric(THEdata$international_students)
+
+THEdata$international <- as.character(THEdata$international)
+THEdata$international <- as.numeric(THEdata$international)
+
+THEdata$income <- as.character(THEdata$income)
+THEdata$income <- as.numeric(THEdata$income)
+
+## Check for NAs in international, international_students, and income (none found)
+sum(is.na(THEdata$international))
+sum(is.na(THEdata$international_students))
+sum(is.na(THEdata$income))
+
+```
+
+Now we need to create the train, test and validation sets. The validation set will only be used at the final stage.
+
+In order to use the confusion matrix, the train, test and validation sets need to be the same size. Therefore, the split sizes ('p') in createDataPartition are used to get the closest values possible, then the train set and validation set are cut to 109 rows, to match the test set. 
+
+```{r}
+## Create validation set (for final test)
+use_index <- createDataPartition(y = THEdata$country, times = 1, p = 0.5, list = FALSE)
+use_set <- THEdata[-use_index,]
+validation_set <- THEdata[use_index,]
+
+## Create test and train sets
+test_index <- createDataPartition(y = use_set$country, times = 1, p = 0.9, list = FALSE)
+train_set <- THEdata[-test_index,]
+test_set <- THEdata[test_index,]
+
+## Check lengths of test, train and validation sets
+length(test_set$country) #109
+length(train_set$country) #129
+length(validation_set$country) #119
+
+## Make test, train and validation sets the same length (109) to avoid problems with confusion matrix
+train_set <- train_set[1:109,]
+validation_set <- validation_set[1:109,]
+
+```
+
+Now that the data has been wrangled and the necessary sets have been created, we will use the knn algorithm (with default k value) and check the accuracy.
+
+```{r}
+## Predict country based on the values for international students, international score, and income
+knn_fit <- knn3(train_set$country ~ train_set$international_students + train_set$international + train_set$income, data = train_set)
+
+y_hat_knn <- predict(knn_fit, test_set, type = "class")
+
+## Check accuracy
+confusionMatrix(data = y_hat_knn, reference = test_set$country)$overall["Accuracy"]
+
+###Accuracy = 0.4036697
+```
+
+The accuracy is quite low, so we will try to optimize the algorithm by finding the best value of k
+
+```{r}
+
+## Create empty list to store accuracy values
+knn_acc_list = list()
+
+## Use for loop to test k values (from 1 – 40)
+for(i in 1:40){
+  fit <- knn3(train_set$country ~ train_set$international_students + train_set$international + train_set$income, data = train_set, k = i)
+
+y_hat <- predict(fit, train_set, type = "class")
+
+x <-  confusionMatrix(data = y_hat, reference = test_set$country)$overall["Accuracy"]
+
+  knn_acc_list[[i]] = x
+}
+
+## Show accuracy for each k value, find max and set max to variable 'k_best'
+
+knn_acc_list
+which.max(knn_acc_list) #32	
+k_best <- which.max(knn_acc_list)
+```
+
+Now we have the best value of k (=32) we will use this value and perform our final test with the validation set
+
+```{r}
+
+## Use knn with k = k_best
+knn_fit <- knn3(train_set$country ~ train_set$international_students + train_set$international + train_set$income, data = train_set, k=k_best)
+
+y_hat_knn <- predict(knn_fit, validation_set, type = "class")
+
+## Check accuracy
+confusionMatrix(data = y_hat_knn, reference = validation_set$country)$overall["Accuracy"]
+
+## Give full confusion matrix output
+confusionMatrix(data = y_hat_knn, reference = validation_set$country)
+
+###Accuracy = 0.4678899
+
+```
+
+The final accuracy is 0.467889
+
+Although this is quite low, as there are 3 possible options (countries) it is significantly better than guessing.
+
+The sensitivity and specificity vary significantly for each of the 3 countries. Further work is necessary to provide more consistency, and to see how this model could be expanded to include all countries (many of which have few institutions in the rankings data).
+
+
+Following this preliminary project, further work can be done to see how the use of different indicators affects the accuracy of the algorithm. 
